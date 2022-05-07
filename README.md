@@ -1,5 +1,9 @@
 # apollo-client-python
 
+## 安装使用:
+```shell
+pip install apollo-client-python
+```
 
 ## 入门使用:
 

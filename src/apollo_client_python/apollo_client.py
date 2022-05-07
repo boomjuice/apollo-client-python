@@ -1,36 +1,40 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
 # @Time:2020.09.12
 # @author:xhrg
 # @email:634789257@qq.com
-
+import hashlib
 import json
+import logging
 import os
 import threading
-import inspect
-import ctypes
-import logging
 import time
+from urllib import parse
 
-from .util import *
+from .constants import CONFIGURATIONS
+from .constants import NAMESPACE_NAME
+from .constants import NOTIFICATION_ID
+from .utils import get_value_from_dict
+from .utils import http_request
+from .utils import init_ip
+from .utils import no_key_cache_key
+from .utils import signature
 
-version = sys.version_info.major
-
-if version == 2:
-    from .python_2x import *
-
-if version == 3:
-    from .python_3x import *
-
-# logging.basicConfig()
-logging.basicConfig(format='%(asctime)s,%(msecs)d %(levelname)-8s [%(filename)s:%(lineno)d] %(message)s',
-                    datefmt='%d-%m-%Y:%H:%M:%S',
-                    level=logging.DEBUG)
+logging.basicConfig(
+    format=
+    '%(asctime)s,%(msecs)d %(levelname)-8s [%(filename)s:%(lineno)d] %(message)s',
+    datefmt='%d-%m-%Y:%H:%M:%S',
+    level=logging.DEBUG)
 
 
-class ApolloClient(object):
+class ApolloClient:
 
-    def __init__(self, config_url, app_id, cluster='default', secret='', start_hot_update=True,
+    def __init__(self,
+                 config_url,
+                 app_id,
+                 cluster='default',
+                 secret='',
+                 namespaces='application',
+                 start_hot_update=True,
                  change_listener=None):
 
         # 核心路由参数
@@ -51,10 +55,13 @@ class ApolloClient(object):
         self._no_key = {}
         self._hash = {}
         self._pull_timeout = 75
-        self._cache_file_path = os.path.expanduser('~') + '/data/apollo/cache/'
+        self._cache_file_path = os.path.expanduser('~') + '/data/apollo_client_python/cache/'
         self._long_poll_thread = None
         self._change_listener = change_listener  # "add" "delete" "update"
-        self._notification_map = {'application': -1}
+        if namespaces:
+            self._notification_map = {ns: -1 for ns in namespaces.split(',')}
+        else:
+            self._notification_map = {'application': -1}
         self.last_release_key = None
         # 私有启动方法
         self._path_checker()
@@ -67,13 +74,15 @@ class ApolloClient(object):
         heartbeat.start()
 
     def get_json_from_net(self, namespace='application'):
-        url = '{}/configs/{}/{}/{}?releaseKey={}&ip={}'.format(self.config_url, self.app_id, self.cluster, namespace,
-                                                               "", self.ip)
+        url = '{}/configs/{}/{}/{}?releaseKey={}&ip={}'.format(
+            self.config_url, self.app_id, self.cluster, namespace, '', self.ip)
         try:
-            code, body = http_request(url, timeout=3, headers=self._signHeaders(url))
+            code, body = http_request(url,
+                                      timeout=3,
+                                      headers=self._signHeaders(url))
             if code == 200:
                 data = json.loads(body)
-                data = data["configurations"]
+                data = data[CONFIGURATIONS]
                 return_data = {CONFIGURATIONS: data}
                 return return_data
             else:
@@ -112,9 +121,16 @@ class ApolloClient(object):
             self._set_local_cache_none(namespace, key)
             return default_val
         except Exception as e:
-            logging.getLogger(__name__).error("get_value has error, [key is %s], [namespace is %s], [error is %s], ",
-                                              key, namespace, e)
+            logging.getLogger(__name__).error(
+                'get_value has error, [key is %s], [namespace is %s], [error is %s], ',
+                key, namespace, e)
             return default_val
+
+    def get_config(self):
+        configs = {}
+        for config in self._cache.values():
+            configs.update(**config[CONFIGURATIONS])
+        return configs
 
     # 设置某个namespace的key为none，这里不设置default_val，是为了保证函数调用实时的正确性。
     # 假设用户2次default_val不一样，然而这里却用default_val填充，则可能会有问题。
@@ -130,7 +146,7 @@ class ApolloClient(object):
 
     def stop(self):
         self._stopping = True
-        logging.getLogger(__name__).info("Stopping listener...")
+        logging.getLogger(__name__).info('Stopping listener...')
 
     # 调用设置的回调函数，如果异常，直接try掉
     def _call_listener(self, namespace, old_kv, new_kv):
@@ -146,23 +162,22 @@ class ApolloClient(object):
                 old_value = old_kv.get(key)
                 if new_value is None:
                     # 如果newValue 是空，则表示key，value被删除了。
-                    self._change_listener("delete", namespace, key, old_value)
+                    self._change_listener('delete', namespace, key, old_value)
                     continue
                 if new_value != old_value:
-                    self._change_listener("update", namespace, key, new_value)
+                    self._change_listener('update', namespace, key, new_value)
                     continue
             for key in new_kv:
                 new_value = new_kv.get(key)
                 old_value = old_kv.get(key)
                 if old_value is None:
-                    self._change_listener("add", namespace, key, new_value)
+                    self._change_listener('add', namespace, key, new_value)
         except BaseException as e:
             logging.getLogger(__name__).warning(str(e))
 
     def _path_checker(self):
         if not os.path.isdir(self._cache_file_path):
-            makedirs_wrapper(self._cache_file_path)
-
+            os.makedirs(self._cache_file_path, exist_ok=True)
 
     # 更新本地缓存和文件缓存
     def _update_cache_and_file(self, namespace_data, namespace='application'):
@@ -174,16 +189,21 @@ class ApolloClient(object):
         if self._hash.get(namespace) == new_hash:
             pass
         else:
-            with open(os.path.join(self._cache_file_path, '%s_configuration_%s.txt' % (self.app_id, namespace)),
-                      'w') as f:
+            with open(
+                    os.path.join(
+                        self._cache_file_path,
+                        f'{self.app_id}_configuration_{namespace}.txt'),
+                    'w') as f:
                 f.write(new_string)
             self._hash[namespace] = new_hash
 
     # 从本地文件获取配置
     def _get_local_cache(self, namespace='application'):
-        cache_file_path = os.path.join(self._cache_file_path, '%s_configuration_%s.txt' % (self.app_id, namespace))
+        cache_file_path = os.path.join(
+            self._cache_file_path,
+            f'{self.app_id}_configuration_{namespace}.txt')
         if os.path.isfile(cache_file_path):
-            with open(cache_file_path, 'r') as f:
+            with open(cache_file_path) as f:
                 result = json.loads(f.readline())
             return result
         return {}
@@ -203,15 +223,17 @@ class ApolloClient(object):
             # 如果长度为0直接返回
             if len(notifications) == 0:
                 return
-            url = '{}/notifications/v2'.format(self.config_url)
+            url = f'{self.config_url}/notifications/v2'
             params = {
                 'appId': self.app_id,
                 'cluster': self.cluster,
                 'notifications': json.dumps(notifications, ensure_ascii=False)
             }
-            param_str = url_encode_wrapper(params)
+            param_str = parse.urlencode(params)
             url = url + '?' + param_str
-            code, body = http_request(url, self._pull_timeout, headers=self._signHeaders(url))
+            code, body = http_request(url,
+                                      self._pull_timeout,
+                                      headers=self._signHeaders(url))
             http_code = code
             if http_code == 304:
                 logging.getLogger(__name__).debug('No change, loop...')
@@ -221,8 +243,11 @@ class ApolloClient(object):
                 for entry in data:
                     namespace = entry[NAMESPACE_NAME]
                     n_id = entry[NOTIFICATION_ID]
-                    logging.getLogger(__name__).info("%s has changes: notificationId=%d", namespace, n_id)
-                    self._get_net_and_set_local(namespace, n_id, call_change=True)
+                    logging.getLogger(__name__).info(
+                        '%s has changes: notificationId=%d', namespace, n_id)
+                    self._get_net_and_set_local(namespace,
+                                                n_id,
+                                                call_change=True)
                     return
             else:
                 logging.getLogger(__name__).warning('Sleep...')
@@ -244,7 +269,7 @@ class ApolloClient(object):
         while not self._stopping:
             self._long_poll()
             time.sleep(self._cycle_time)
-        logging.getLogger(__name__).info("stopped, long_poll")
+        logging.getLogger(__name__).info('stopped, long_poll')
 
     # 给header增加加签需求
     def _signHeaders(self, url):
@@ -253,7 +278,8 @@ class ApolloClient(object):
             return headers
         uri = url[len(self.config_url):len(url)]
         time_unix_now = str(int(round(time.time() * 1000)))
-        headers['Authorization'] = 'Apollo ' + self.app_id + ':' + signature(time_unix_now, uri, self.secret)
+        headers['Authorization'] = 'Apollo ' + self.app_id + ':' + signature(
+            time_unix_now, uri, self.secret)
         headers['Timestamp'] = time_unix_now
         return headers
 
@@ -264,16 +290,19 @@ class ApolloClient(object):
             time.sleep(60 * 10)  # 10分钟
 
     def _do_heartBeat(self, namespace):
-        url = '{}/configs/{}/{}/{}?ip={}'.format(self.config_url, self.app_id, self.cluster, namespace,
+        url = '{}/configs/{}/{}/{}?ip={}'.format(self.config_url, self.app_id,
+                                                 self.cluster, namespace,
                                                  self.ip)
         try:
-            code, body = http_request(url, timeout=3, headers=self._signHeaders(url))
+            code, body = http_request(url,
+                                      timeout=3,
+                                      headers=self._signHeaders(url))
             if code == 200:
                 data = json.loads(body)
-                if self.last_release_key == data["releaseKey"]:
+                if self.last_release_key == data['releaseKey']:
                     return None
-                self.last_release_key = data["releaseKey"]
-                data = data["configurations"]
+                self.last_release_key = data['releaseKey']
+                data = data[CONFIGURATIONS]
                 self._update_cache_and_file(data, namespace)
             else:
                 return None
