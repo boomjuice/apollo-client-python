@@ -1,13 +1,12 @@
 import base64
 import hashlib
 import hmac
-import logging
 import socket
 import urllib.request
 from urllib.error import HTTPError
 
 from .constants import CONFIGURATIONS
-
+from .logs import logger
 
 def http_request(url, timeout, headers=None):
     if headers is None:
@@ -19,10 +18,10 @@ def http_request(url, timeout, headers=None):
         return res.code, body
     except HTTPError as e:
         if e.code == 304:
-            logging.getLogger(__name__).warning(
+            logger.warning(
                 'http_request error,code is 304, maybe you should check secret')
             return 304, None
-        logging.getLogger(__name__).warning(
+        logger.warning(
             'http_request error,code is %d, msg is %s', e.code, e.msg)
         raise e
 

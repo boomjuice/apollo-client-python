@@ -1,7 +1,3 @@
-#!/usr/bin/env python
-# @Time:2020.09.12
-# @author:xhrg
-# @email:634789257@qq.com
 import hashlib
 import json
 import logging
@@ -18,13 +14,7 @@ from .utils import http_request
 from .utils import init_ip
 from .utils import no_key_cache_key
 from .utils import signature
-
-logging.basicConfig(
-    format=
-    '%(asctime)s,%(msecs)d %(levelname)-8s [%(filename)s:%(lineno)d] %(message)s',
-    datefmt='%d-%m-%Y:%H:%M:%S',
-    level=logging.DEBUG)
-
+from .logs import logger
 
 class ApolloClient:
 
@@ -55,7 +45,8 @@ class ApolloClient:
         self._no_key = {}
         self._hash = {}
         self._pull_timeout = 75
-        self._cache_file_path = os.path.expanduser('~') + '/data/apollo_client_python/cache/'
+        self._cache_file_path = os.path.expanduser(
+            '~') + '/data/apollo_client_python/cache/'
         self._long_poll_thread = None
         self._change_listener = change_listener  # "add" "delete" "update"
         if namespaces:
@@ -67,6 +58,9 @@ class ApolloClient:
         self._path_checker()
         if start_hot_update:
             self._start_hot_update()
+
+        # 缓存预热
+        self._refesh_notification_map()
 
         # 启动心跳线程
         heartbeat = threading.Thread(target=self._heartBeat)
@@ -88,7 +82,7 @@ class ApolloClient:
             else:
                 return None
         except Exception as e:
-            logging.getLogger(__name__).error(str(e))
+            logger.error(str(e))
             return None
 
     def get_value(self, key, default_val=None, namespace='application'):
@@ -121,7 +115,7 @@ class ApolloClient:
             self._set_local_cache_none(namespace, key)
             return default_val
         except Exception as e:
-            logging.getLogger(__name__).error(
+            logger.error(
                 'get_value has error, [key is %s], [namespace is %s], [error is %s], ',
                 key, namespace, e)
             return default_val
@@ -146,7 +140,7 @@ class ApolloClient:
 
     def stop(self):
         self._stopping = True
-        logging.getLogger(__name__).info('Stopping listener...')
+        logger.info('Stopping listener...')
 
     # 调用设置的回调函数，如果异常，直接try掉
     def _call_listener(self, namespace, old_kv, new_kv):
@@ -173,7 +167,7 @@ class ApolloClient:
                 if old_value is None:
                     self._change_listener('add', namespace, key, new_value)
         except BaseException as e:
-            logging.getLogger(__name__).warning(str(e))
+            logger.warning(str(e))
 
     def _path_checker(self):
         if not os.path.isdir(self._cache_file_path):
@@ -236,23 +230,23 @@ class ApolloClient:
                                       headers=self._signHeaders(url))
             http_code = code
             if http_code == 304:
-                logging.getLogger(__name__).debug('No change, loop...')
+                logger.debug('No change, loop...')
                 return
             if http_code == 200:
                 data = json.loads(body)
                 for entry in data:
                     namespace = entry[NAMESPACE_NAME]
                     n_id = entry[NOTIFICATION_ID]
-                    logging.getLogger(__name__).info(
+                    logger.info(
                         '%s has changes: notificationId=%d', namespace, n_id)
                     self._get_net_and_set_local(namespace,
                                                 n_id,
                                                 call_change=True)
                     return
             else:
-                logging.getLogger(__name__).warning('Sleep...')
+                logger.warning('Sleep...')
         except Exception as e:
-            logging.getLogger(__name__).warning(str(e))
+            logger.warning(str(e))
 
     def _get_net_and_set_local(self, namespace, n_id, call_change=False):
         namespace_data = self.get_json_from_net(namespace)
@@ -265,11 +259,11 @@ class ApolloClient:
             self._call_listener(namespace, old_kv, new_kv)
 
     def _listener(self):
-        logging.getLogger(__name__).info('start long_poll')
+        logger.info('start long_poll')
         while not self._stopping:
             self._long_poll()
             time.sleep(self._cycle_time)
-        logging.getLogger(__name__).info('stopped, long_poll')
+        logger.info('stopped, long_poll')
 
     # 给header增加加签需求
     def _signHeaders(self, url):
@@ -285,9 +279,12 @@ class ApolloClient:
 
     def _heartBeat(self):
         while not self._stopping:
-            for namespace in self._notification_map:
-                self._do_heartBeat(namespace)
+            self._refesh_notification_map()
             time.sleep(60 * 10)  # 10分钟
+
+    def _refesh_notification_map(self):
+        for namespace in self._notification_map:
+            self._do_heartBeat(namespace)
 
     def _do_heartBeat(self, namespace):
         url = '{}/configs/{}/{}/{}?ip={}'.format(self.config_url, self.app_id,
@@ -302,10 +299,9 @@ class ApolloClient:
                 if self.last_release_key == data['releaseKey']:
                     return None
                 self.last_release_key = data['releaseKey']
-                data = data[CONFIGURATIONS]
                 self._update_cache_and_file(data, namespace)
             else:
                 return None
         except Exception as e:
-            logging.getLogger(__name__).error(str(e))
+            logger.error(str(e))
             return None

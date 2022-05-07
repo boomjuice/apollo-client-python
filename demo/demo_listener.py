@@ -5,7 +5,7 @@
 import os
 import time
 
-from apollo_client_python.apollo_client import ApolloClient
+from apollo_client_python import ApolloClient
 
 apollo_config_url = os.environ.get('APOLLO_CONFIG_URL')
 
